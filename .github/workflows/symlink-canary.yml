@@ -1,0 +1,88 @@
+name: Claude Action Symlink Canary
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prove:
+    # Only run for a real fork PR, not branches in your own repo.
+    if: github.event.pull_request.head.repo.fork == true
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout PR content normally
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - name: Confirm checkout auth exists without revealing it
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          key='http.https://github.com/.extraheader'
+
+          if git config --local --get-all "$key" >/dev/null; then
+            echo "CHECKOUT_AUTH_PRESENT=yes"
+          else
+            echo "CHECKOUT_AUTH_PRESENT=no"
+            exit 1
+          fi
+
+      - name: Run affected Claude Action path
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@51705da45eecce209d4700538bf8377d5b5fc695
+        with:
+          # Required so allowed_non_write_users is actually enabled.
+          github_token: ${{ github.token }}
+
+          # This is the condition Anthropic says keeps config token-free.
+          allowed_non_write_users: "*"
+
+          # The branch we are testing.
+          use_commit_signing: "true"
+
+          # Forces agent mode.
+          prompt: "Return exactly: lab complete"
+
+          # Presence-only validation. Not a real API key.
+          anthropic_api_key: "test-only-placeholder"
+
+          # Prevents a real Claude execution.
+          path_to_claude_code_executable: "/usr/bin/true"
+
+          display_report: "false"
+          show_full_output: "false"
+
+      - name: Compare auth entries without printing either one
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          key='http.https://github.com/.extraheader'
+
+          test -f .claude-pr/CLAUDE.md
+
+          if cmp -s \
+            <(git config --local --get-all "$key") \
+            <(git config --file .claude-pr/CLAUDE.md --get-all "$key"); then
+            echo "SNAPSHOT_AUTH_MATCH=yes"
+          else
+            echo "SNAPSHOT_AUTH_MATCH=no"
+            exit 1
+          fi
+
+      - name: Delete the local snapshot
+        if: always()
+        shell: bash
+        run: |
+          rm -rf .claude-pr
